@@ -99,26 +99,29 @@ function! s:SetMatcher(color, pat) "{{{1
   endif
 endfunction
 
-" Color Converters {{{1
-function! s:RgbBgColor() "{{{2
+" Convert background color to RGB
+function! s:RgbBgColor() abort
   let bg = synIDattr(synIDtrans(hlID("Normal")), "bg")
+  if empty(bg)
+    return []
+  endif
   let r = str2nr(bg[1:2], 16)
   let g = str2nr(bg[3:4], 16)
   let b = str2nr(bg[5:6], 16)
-  return [r,g,b]
+  return [r, g, b]
 endfunction
 
-function! s:Hexa2Rgba(hex,alpha) "{{{2
+" Convert hex color with alpha to RGBA
+function! s:Hexa2Rgba(hex, alpha) abort
   let r = str2nr(a:hex[1:2], 16)
   let g = str2nr(a:hex[3:4], 16)
   let b = str2nr(a:hex[5:6], 16)
-  let alpha = printf("%.2f", str2float(str2nr(a:alpha,16)) / 255.0)
-  return [r,g,b,alpha]
+  let alpha = printf("%.2f", str2float(str2nr(a:alpha, 16)) / 255.0)
+  return [r, g, b, alpha]
 endfunction
 
-function! s:Rgba2Rgb(r,g,b,alpha,percent,rgb_bg) "{{{2
-  " converts matched r,g,b values and percentages to [0:255]
-  " if possible, overlays r,g,b with alpha on given rgb_bg color
+" Convert RGBA to RGB with background blending
+function! s:Rgba2Rgb(r, g, b, alpha, percent, rgb_bg) abort
   if a:percent
     let r = a:r * 255 / 100
     let g = a:g * 255 / 100
@@ -132,7 +135,7 @@ function! s:Rgba2Rgb(r,g,b,alpha,percent,rgb_bg) "{{{2
     return []
   endif
   if empty(a:rgb_bg)
-    return [r,g,b]
+    return [r, g, b]
   endif
   let alpha = str2float(a:alpha)
   if alpha < 0
@@ -141,105 +144,124 @@ function! s:Rgba2Rgb(r,g,b,alpha,percent,rgb_bg) "{{{2
     let alpha = 1.0
   endif
   if alpha == 1.0
-    return [r,g,b]
+    return [r, g, b]
   endif
-  let r = float2nr(ceil(r * alpha) + ceil(a:rgb_bg[0] * (1 - alpha)))
-  let g = float2nr(ceil(g * alpha) + ceil(a:rgb_bg[1] * (1 - alpha)))
-  let b = float2nr(ceil(b * alpha) + ceil(a:rgb_bg[2] * (1 - alpha)))
-  if r > 255
-    let r = 255
-  endif
-  if g > 255
-    let g = 255
-  endif
-  if b > 255
-    let b = 255
-  endif
-  return [r,g,b]
+  let r = float2nr(ceil(r * alpha + a:rgb_bg[0] * (1 - alpha)))
+  let g = float2nr(ceil(g * alpha + a:rgb_bg[1] * (1 - alpha)))
+  let b = float2nr(ceil(b * alpha + a:rgb_bg[2] * (1 - alpha)))
+  return [min([r, 255]), min([g, 255]), min([b, 255])]
 endfunction
 
-"ColorFinders {{{1
-function! s:HexCode(str, lineno) "{{{2
-  " finds RGB: #00f #0000ff and RGBA: #00f8 #0000ff88 (or ARGB: #800f #880000ff)
-  if has("gui_running")
-    let rgb_bg = s:RgbBgColor()
-  else
-    " translucent colors would display incorrectly, so ignore the alpha value
-    let rgb_bg = []
-  endif
+function! s:HexCode(str, lineno) abort
+  " Finds and processes hex color codes (#RGB, #RRGGBB, #RGBA, #AARRGGBB) in a string
+  " Args:
+  "   str: String to search for color codes
+  "   lineno: Line number (for context, not used here)
+  " Returns: List of [color, pattern] pairs for highlighting
   let ret = []
-  let place = 0
-  let colorpat = '#[0-9A-Fa-f]\{3\}\>\|#[0-9A-Fa-f]\{6\}\>\|#[0-9A-Fa-f]\{8\}\>\|#[0-9A-Fa-f]\{4\}\>'
-  while 1
-    let foundcolor = matchstr(a:str, colorpat, place)
-    if foundcolor == ''
+  let len_str = strlen(a:str)
+  let pos = 0
+
+  " Determine background for alpha blending
+  let rgb_bg = has("gui_running") || (has("termguicolors") && &termguicolors) ? s:RgbBgColor() : []
+
+  " Cache for processed colors to avoid redundant conversions
+  let s:color_cache = get(s:, 'color_cache', {})
+
+  while pos < len_str
+    " Find next '#' symbol
+    let pos = stridx(a:str, '#', pos)
+    if pos == -1
       break
     endif
-    let place = matchend(a:str, colorpat, place)
-    let pat = foundcolor . '\>'
-    let colorlen = len(foundcolor)
-    if get(g:, 'colorizer_hex_alpha_first') == 1
-      if colorlen == 4 || colorlen == 5
-        let ha = tolower(foundcolor[1])
-        let hr = tolower(foundcolor[2])
-        let hg = tolower(foundcolor[3])
-        let hb = tolower(foundcolor[4])
-        let foundcolor = substitute(foundcolor, '[[:xdigit:]]', '&&', 'g')
-      else
-        let ha = tolower(foundcolor[1:2])
-        let hr = tolower(foundcolor[3:4])
-        let hg = tolower(foundcolor[5:6])
-        let hb = tolower(foundcolor[7:8])
+
+    " Extract potential color code
+    let start = pos
+    let pos += 1
+    let code_len = 0
+    let max_len = min([9, len_str - pos])  " Max length for #AARRGGBB (9 chars including #)
+    let code = '#'
+
+    " Collect characters after '#' (up to 8 for #AARRGGBB or #RRGGBBAA)
+    while code_len < max_len && pos + code_len < len_str
+      let char = a:str[pos + code_len]
+      if char !~# '[0-9A-Fa-f]'
+        break
       endif
-      if len(foundcolor) == 9
-        let alpha      = foundcolor[1:2]
-        let foundcolor = '#'.foundcolor[3:8]
-      else
-        let alpha = 'ff'
-      endif
-      if empty(rgb_bg)
-        if colorlen == 5
-          let pat = printf('\c#\x\zs%s%s%s\ze\>', hr,hg,hb)
-        elseif colorlen == 9
-          let pat = printf('\c#\x\x\zs%s%s%s\ze\>', hr,hg,hb)
-        endif
+      let code .= char
+      let code_len += 1
+    endwhile
+
+    " Validate color code length
+    if code_len != 3 && code_len != 4 && code_len != 6 && code_len != 8
+      let pos = start + 1
+      continue
+    endif
+
+    " Check if code is cached
+    if has_key(s:color_cache, code)
+      call add(ret, s:color_cache[code])
+      let pos = start + code_len + 1
+      continue
+    endif
+
+    " Process color code
+    let is_alpha_first = get(g:, 'colorizer_hex_alpha_first', 0)
+    let hr = ''
+    let hg = ''
+    let hb = ''
+    let ha = 'ff'  " Default alpha (opaque)
+
+    if code_len == 3 || code_len == 4
+      " Handle #RGB or #RGBA
+      let hr = tolower(code[1]) . tolower(code[1])
+      let hg = tolower(code[2]) . tolower(code[2])
+      let hb = tolower(code[3]) . tolower(code[3])
+      if code_len == 4
+        let ha = tolower(code[4]) . tolower(code[4])
       endif
     else
-      if colorlen == 4 || colorlen == 5
-        let hr = tolower(foundcolor[1])
-        let hg = tolower(foundcolor[2])
-        let hb = tolower(foundcolor[3])
-        let ha = tolower(foundcolor[4])
-        let foundcolor = substitute(foundcolor, '[[:xdigit:]]', '&&', 'g')
+      " Handle #RRGGBB or #AARRGGBB or #RRGGBBAA
+      if is_alpha_first && code_len == 8
+        let ha = tolower(code[1:2])
+        let hr = tolower(code[3:4])
+        let hg = tolower(code[5:6])
+        let hb = tolower(code[7:8])
       else
-        let hr = tolower(foundcolor[1:2])
-        let hg = tolower(foundcolor[3:4])
-        let hb = tolower(foundcolor[5:6])
-        let ha = tolower(foundcolor[7:8])
-      endif
-      if len(foundcolor) == 9
-        let alpha      = foundcolor[7:8]
-        let foundcolor = foundcolor[0:6]
-      else
-        let alpha = 'ff'
-      endif
-      if empty(rgb_bg)
-        if colorlen == 5
-          let pat = printf('\c#%s%s%s\ze\x\>', hr,hg,hb)
-        elseif colorlen == 9
-          let pat = printf('\c#%s%s%s\ze\x\x\>', hr,hg,hb)
+        let hr = tolower(code[1:2])
+        let hg = tolower(code[3:4])
+        let hb = tolower(code[5:6])
+        if code_len == 8
+          let ha = tolower(code[7:8])
         endif
       endif
     endif
-    if empty(rgb_bg) || tolower(alpha) == 'ff'
-      call add(ret, [foundcolor, pat])
-    else
-      let rgba    = s:Hexa2Rgba(foundcolor, alpha)
-      let rgb     = s:Rgba2Rgb(rgba[0], rgba[1], rgba[2], rgba[3], 0, rgb_bg)
-      let l:color = printf('#%02x%02x%02x', rgb[0], rgb[1], rgb[2])
-      call add(ret, [l:color, pat])
+
+    let foundcolor = '#' . hr . hg . hb
+    let pat = '\V' . escape(code, '\')  " Exact match for the original code
+
+    " Handle alpha channel if present
+    if ha != 'ff' && !empty(rgb_bg)
+      let rgba = s:Hexa2Rgba(foundcolor, ha)
+      let rgb = s:Rgba2Rgb(rgba[0], rgba[1], rgba[2], rgba[3], 0, rgb_bg)
+      if !empty(rgb)
+        let foundcolor = printf('#%02x%02x%02x', rgb[0], rgb[1], rgb[2])
+        " Adjust pattern to match RGB part only if alpha was processed
+        if code_len == 4
+          let pat = '\V' . escape(code[0:3], '\') . '\x'
+        elseif code_len == 8
+          let pat = is_alpha_first ? '\V' . '\x\x' . escape(code[3:8], '\') : '\V' . escape(code[0:6], '\') . '\x\x'
+        endif
+      endif
     endif
+
+    " Cache and store result
+    let result = [foundcolor, pat]
+    let s:color_cache[code] = result
+    call add(ret, result)
+    let pos = start + code_len + 1
   endwhile
+
   return ret
 endfunction
 
