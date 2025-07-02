@@ -22,37 +22,114 @@ function! s:FGforBG(bg) "{{{1
   end
 endfunction
 
-function! s:Rgb2xterm(color) "{{{1
-  " selects the nearest xterm color for a rgb value like #FF0000
-  let best_match=0
-  let smallest_distance = 10000000000
+" Cache for RGB to xterm color mappings
+let s:rgb_to_xterm_cache = get(s:, 'rgb_to_xterm_cache', {})
+
+" Predefined mappings for common colors
+let s:common_colors = {
+  \ '#000000': 0, '#ffffff': 15, '#ff0000': 9, '#00ff00': 10,
+  \ '#0000ff': 12, '#ffff00': 11, '#ff00ff': 13, '#00ffff': 14
+  \ }
+
+" Xterm color cube values
+let s:valuerange = [0x00, 0x5F, 0x87, 0xAF, 0xD7, 0xFF]
+
+" Basic 16 colors for xterm
+let s:basic16 = [
+  \ [0x00, 0x00, 0x00], [0xCD, 0x00, 0x00],
+  \ [0x00, 0xCD, 0x00], [0xCD, 0xCD, 0x00],
+  \ [0x00, 0x00, 0xEE], [0xCD, 0x00, 0xCD],
+  \ [0x00, 0xCD, 0xCD], [0xE5, 0xE5, 0xE5],
+  \ [0x7F, 0x7F, 0x7F], [0xFF, 0x00, 0x00],
+  \ [0x00, 0xFF, 0x00], [0xFF, 0xFF, 0x00],
+  \ [0x5C, 0x5C, 0xFF], [0xFF, 0x00, 0xFF],
+  \ [0x00, 0xFF, 0xFF], [0xFF, 0xFF, 0xFF]
+  \ ]
+
+function! s:Rgb2xterm(color) abort
+  " Converts an RGB color (#RRGGBB) to the nearest xterm-256 color index
+  " Args:
+  "   color: Hex color string (e.g., #FF0000)
+  " Returns: xterm color index (0-255)
+
+  " Check cache for previously computed color
+  if has_key(s:rgb_to_xterm_cache, a:color)
+    return s:rgb_to_xterm_cache[a:color]
+  endif
+
+  " Check common colors LUT
+  if has_key(s:common_colors, a:color)
+    let s:rgb_to_xterm_cache[a:color] = s:common_colors[a:color]
+    return s:common_colors[a:color]
+  endif
+
+  " Extract RGB components
   let r = str2nr(a:color[1:2], 16)
   let g = str2nr(a:color[3:4], 16)
   let b = str2nr(a:color[5:6], 16)
-  let colortable = s:GetXterm2rgbTable()
-  for c in range(0,254)
-    let d = pow(colortable[c][0]-r,2) + pow(colortable[c][1]-g,2) + pow(colortable[c][2]-b,2)
-    if d<smallest_distance
+
+  " Initialize best match
+  let best_match = 0
+  let smallest_distance = 10000000000
+
+  " Check basic 16 colors
+  for c in range(0, 15)
+    let [r2, g2, b2] = s:basic16[c]
+    let d = (r - r2) * (r - r2) + (g - g2) * (g - g2) + (b - b2) * (b - b2)
+    if d < smallest_distance
       let smallest_distance = d
       let best_match = c
     endif
   endfor
+
+  " Find closest color in 6x6x6 cube (indices 16-231)
+  let r_idx = 0
+  let g_idx = 0
+  let b_idx = 0
+  let min_diff_r = 256
+  let min_diff_g = 256
+  let min_diff_b = 256
+
+  for i in range(6)
+    let diff_r = abs(s:valuerange[i] - r)
+    let diff_g = abs(s:valuerange[i] - g)
+    let diff_b = abs(s:valuerange[i] - b)
+    if diff_r < min_diff_r
+      let min_diff_r = diff_r
+      let r_idx = i
+    endif
+    if diff_g < min_diff_g
+      let min_diff_g = diff_g
+      let g_idx = i
+    endif
+    if diff_b < min_diff_b
+      let min_diff_b = diff_b
+      let b_idx = i
+    endif
+  endfor
+
+  let cube_idx = 16 + (r_idx * 36) + (g_idx * 6) + b_idx
+  let [r2, g2, b2] = [s:valuerange[r_idx], s:valuerange[g_idx], s:valuerange[b_idx]]
+  let d = (r - r2) * (r - r2) + (g - g2) * (g - g2) + (b - b2) * (b - b2)
+  if d < smallest_distance
+    let smallest_distance = d
+    let best_match = cube_idx
+  endif
+
+  " Check grayscale (indices 232-255)
+  for c in range(232, 255)
+    let gray = 8 + (c - 232) * 10
+    let d = (r - gray) * (r - gray) + (g - gray) * (g - gray) + (b - gray) * (b - gray)
+    if d < smallest_distance
+      let smallest_distance = d
+      let best_match = c
+    endif
+  endfor
+
+  " Cache and return result
+  let s:rgb_to_xterm_cache[a:color] = best_match
   return best_match
 endfunction
-
-"" the 6 value iterations in the xterm color cube {{{1
-let s:valuerange = [0x00, 0x5F, 0x87, 0xAF, 0xD7, 0xFF]
-
-"" 16 basic colors {{{1
-let s:basic16 = [
-      \ [0x00, 0x00, 0x00], [0xCD, 0x00, 0x00],
-      \ [0x00, 0xCD, 0x00], [0xCD, 0xCD, 0x00],
-      \ [0x00, 0x00, 0xEE], [0xCD, 0x00, 0xCD],
-      \ [0x00, 0xCD, 0xCD], [0xE5, 0xE5, 0xE5],
-      \ [0x7F, 0x7F, 0x7F], [0xFF, 0x00, 0x00],
-      \ [0x00, 0xFF, 0x00], [0xFF, 0xFF, 0x00],
-      \ [0x5C, 0x5C, 0xFF], [0xFF, 0x00, 0xFF],
-      \ [0x00, 0xFF, 0xFF], [0xFF, 0xFF, 0xFF]]
 
 function! s:Xterm2rgb(color) "{{{1
   " 16 basic colors
